@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Formatador de Agenda</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  body{font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:24px;color:#222}
+  .box{max-width:640px;margin:auto;background:#fff;border-radius:10px;padding:28px;box-shadow:0 2px 8px #0002}
+  h1{margin:0 0 4px;font-size:22px;color:#a0702a}
+  p.sub{margin:0 0 20px;color:#666;font-size:14px}
+  label{display:block;font-weight:bold;margin:16px 0 6px;font-size:14px}
+  input[type=file],input[type=date]{width:100%;box-sizing:border-box;padding:9px;border:1px solid #ccc;border-radius:6px;font-size:14px}
+  button{margin-top:22px;width:100%;padding:13px;border:0;border-radius:6px;background:#d9a441;color:#fff;font-size:16px;font-weight:bold;cursor:pointer}
+  button:disabled{background:#bbb;cursor:wait}
+  pre{background:#fafafa;border:1px solid #e3e3e3;border-radius:6px;padding:12px;font-size:13px;white-space:pre-wrap;margin-top:18px;min-height:20px}
+  .warn{color:#b00020}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>Formatador de Agenda</h1>
+  <p class="sub">Envie a base bruta (agenda777.xlsx) e baixe o .zip com as 5 planilhas.</p>
+  <label for="arq">Base bruta (.xlsx)</label>
+  <input type="file" id="arq" accept=".xlsx">
+  <label for="dia">Data do dia (D0)</label>
+  <input type="date" id="dia">
+  <button id="go">Gerar planilhas</button>
+  <pre id="log"></pre>
+</div>
+
+<script>
+// ======================= REGRAS (edite aqui) =======================
+const EXCLUIR_R1 = ["Karen Xavier Cintra Freire", "Brenda Naufal", "Milton Oliveira de Souza", "Osmar Padilha","Ingrid Toledo de Oliveira"];
+const RESP_AREA = {
+  "Cível": ["Annelise Cavalcante de Almeida","Beatriz Lourenco Berniz","Denis Ranieri","Fernanda Machado Melendez","Guilherme Brandão Nunes Caldeira","Mariana Riotinto Martins Silva","Nicoly Nascimento Jorge","Pedro Henrique Almeida Conceição","Ricardo Alexandre Politi"],
+  "Trabalhista": ["Beatriz Julia Raial Mambrini","Claudia Aguiar Racz","Gabriella da Silva Caboclo","Indyara Tome de Brito","Joao Lucas Silva Barbosa","Rafael Manta de Brito"],
+  "Tributário": ["Samuel Magalhaes Silva de Almeida","Tatiana Sagula Machado Dias","Victor Hugo Rocha Macedo"]
+};
+const ARQ_AREA = {"Cível":"Agenda Cível","Trabalhista":"Agenda Trabalhista","Tributário":"Agenda Tributária"};
+const COR = {cab:"FFC00000", d0:"FFDA9694", d1:"FFFFFF99", d2:"FFFABF8F"};
+const ALTURA = 120, LARG = 18;
+const LARG_ESP = {"Cliente":22,"Contrario":22,"Descrição":20,"Justificativas":20,"Observação (Justificativa)":20,"Workflow":20,"Responsável 1":20,"Responsável 2":20};
+const ORDEM = ["Prazos","Tarefas","Audiências","Julgamentos","Perícias","Reunião","Ligação","Outras"];
+const TIPO_ABA = {prazo:"Prazos",tarefa:"Tarefas",audiencia:"Audiências",julgamento:"Julgamentos",pericia:"Perícias",reuniao:"Reunião",ligacao:"Ligação"};
+const FATAIS_EXCL = ["Acompanhamento","Providências Iniciais","Publicação Não Capturada pelo Easyjur"];
+// ===================================================================
+
+const $ = id => document.getElementById(id);
+const norm = t => t==null ? "" : String(t).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[\u00a0"'“”]/g," ").replace(/\s+/g," ").trim().toLowerCase();
+const ILEGAL = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+const pad = n => String(n).padStart(2,"0");
+const key = d => d ? `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}` : "";
+const addDias = (d,n) => new Date(d.getTime()+n*864e5);
+
+// ======================= AUDITORIA =======================
+const auditoria = [];
+const COLS_AUD = ["Data/Hora","Ação","Motivo","ID","Número do Processo","Cliente","Contrário","Responsável 1","Campo Alterado","Valor Anterior","Valor Novo"];
+const agoraBR = () => new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
+
+// dados: { acao, motivo, linha (objeto da linha), campo, anterior, novo }
+function registrarAuditoria(dados){
+  const r = dados.linha || {};
+  const v = x => x==null ? "" : x;
+  auditoria.push({
+    "Data/Hora": agoraBR(),
+    "Ação": dados.acao,
+    "Motivo": v(dados.motivo),
+    "ID": v(r["id"]),
+    "Número do Processo": v(r["Número do Processo"]),
+    "Cliente": v(r["Cliente"]),
+    "Contrário": v(r["Contrario"] ?? r["Contrário"]),
+    "Responsável 1": v(r["Responsável 1"]),
+    "Campo Alterado": v(dados.campo),
+    "Valor Anterior": v(dados.anterior),
+    "Valor Novo": v(dados.novo)
+  });
+}
+
+async function gerarAuditoriaXlsx(){
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Auditoria");
+  ws.addRow(COLS_AUD);
+  auditoria.forEach(a => ws.addRow(COLS_AUD.map(c => a[c])));
+  ws.autoFilter = {from:{row:1,column:1}, to:{row:1,column:COLS_AUD.length}};
+  ws.views = [{state:"frozen", ySplit:1}];
+  const larg = {"Data/Hora":20,"Ação":13,"Motivo":45,"ID":12,"Número do Processo":28,"Cliente":28,"Contrário":28,"Responsável 1":30,"Campo Alterado":16,"Valor Anterior":20,"Valor Novo":20};
+  COLS_AUD.forEach((c,i)=>{
+    ws.getColumn(i+1).width = larg[c];
+    const h = ws.getRow(1).getCell(i+1);
+    h.font = {bold:true, color:{argb:"FFFFFFFF"}};
+    h.fill = {type:"pattern", pattern:"solid", fgColor:{argb:COR.cab}};
+    h.alignment = {horizontal:"center", vertical:"middle"};
+  });
+  return wb.xlsx.writeBuffer();
+}
+
+function montarResumo(txt, log){
+  const cont = a => auditoria.filter(x => x["Ação"]===a).length;
+  const linhas = [
+    "RESUMO DO PROCESSAMENTO",
+    `Gerado em: ${agoraBR()}`,
+    "",
+    txt,
+    "",
+    "AUDITORIA",
+    `EXCLUIDO: ${cont("EXCLUIDO")}`,
+    `ALTERADO: ${cont("ALTERADO")}`,
+    `PREENCHIDO: ${cont("PREENCHIDO")}`,
+    `ALERTA: ${cont("ALERTA")}`,
+    `Total de registros: ${auditoria.length}`,
+    "",
+    log.semMapa.length
+      ? "ALERTAS - Área vazia sem responsável na lista (ficam só na Agenda principal):\n" + log.semMapa.join("\n")
+      : "Nenhum alerta."
+  ];
+  return linhas.join("\n").replace(/\r?\n/g, "\r\n");
+}
+// =========================================================
+
+function valor(c){
+  let v = c.value;
+  if (v==null || v==="") return null;
+  if (typeof v==="object" && !(v instanceof Date)){
+    if (v.richText) v = v.richText.map(r=>r.text).join("");
+    else if ("result" in v) v = v.result;
+    else if (v.text) v = v.text;
+  }
+  return typeof v==="string" ? v.replace(ILEGAL,"") : v;
+}
+function parseData(v){
+  if (v==null) return null;
+  if (v instanceof Date) return new Date(Date.UTC(v.getUTCFullYear(),v.getUTCMonth(),v.getUTCDate()));
+  const m = String(v).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return m ? new Date(Date.UTC(+m[3],+m[2]-1,+m[1])) : null;
+}
+
+async function ler(file){
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await file.arrayBuffer());
+  const ws = wb.worksheets[0];
+  const cols = [];
+  ws.getRow(1).eachCell({includeEmpty:false},(c,i)=>{ const t=valor(c); if(t!=null) cols[i-1]=String(t); });
+  const n = cols.length, rows = [];
+  ws.eachRow((r,i)=>{
+    if (i===1) return;
+    const o = {}; let vazio = true;
+    for (let j=0;j<n;j++){ if(!cols[j]) continue; const v = valor(r.getCell(j+1)); o[cols[j]] = v; if(v!=null) vazio=false; }
+    if(!vazio) rows.push(o);
+  });
+  return {cols: cols.filter(Boolean), rows};
+}
+
+function tratar(rows, log){
+  log.original = rows.length;
+  // 1. número do processo sem aspas
+  rows.forEach(r=>{ if(r["Número do Processo"]!=null) r["Número do Processo"] = String(r["Número do Processo"]).replace(/["“”]/g,"").trim(); });
+  // 3. excluir responsáveis
+  const ex = new Set(EXCLUIR_R1.map(norm));
+  const antes = rows.length;
+  rows = rows.filter(r=>{
+    if (ex.has(norm(r["Responsável 1"]))){
+      registrarAuditoria({acao:"EXCLUIDO", motivo:"Responsável 1 na lista EXCLUIR_R1", linha:r, campo:"(linha inteira)", anterior:"", novo:""});
+      return false;
+    }
+    return true;
+  });
+  log.excluidas = antes-rows.length;
+  // 4. penal -> cível
+  log.penal = 0;
+  rows.forEach(r=>{
+    if(norm(r["Área"])==="penal-criminal"){
+      const anterior = r["Área"];
+      r["Área"]="Cível"; log.penal++;
+      registrarAuditoria({acao:"ALTERADO", motivo:"Área Penal-Criminal convertida para Cível", linha:r, campo:"Área", anterior, novo:"Cível"});
+    }
+  });
+  // 5. área vazia
+  const mapa = {};
+  for (const [a,ns] of Object.entries(RESP_AREA)) ns.forEach(n=>mapa[norm(n)]=a);
+  log.preench = 0; log.semMapa = [];
+  rows.forEach(r=>{
+    if (norm(r["Área"])===""){
+      const a = mapa[norm(r["Responsável 1"])];
+      const anterior = r["Área"];
+      if (a){
+        r["Área"]=a; log.preench++;
+        registrarAuditoria({acao:"PREENCHIDO", motivo:"Área vazia preenchida pelo mapeamento do Responsável 1", linha:r, campo:"Área", anterior, novo:a});
+      } else {
+        r["Área"]=null; log.semMapa.push(`id ${r["id"]} – ${r["Responsável 1"]}`);
+        registrarAuditoria({acao:"ALERTA", motivo:"Área vazia e Responsável 1 sem mapeamento em RESP_AREA", linha:r, campo:"Área", anterior, novo:""});
+      }
+    }
+  });
+  // 9. data fatal real + 12. ordenar
+  rows.forEach(r=>r["Data fatal"]=parseData(r["Data fatal"]));
+  rows.sort((a,b)=>{ const x=a["Data fatal"],y=b["Data fatal"]; if(!x&&!y) return 0; if(!x) return 1; if(!y) return -1; return x-y; });
+  return rows;
+}
+
+function aba(wb, nome, cols, rows, hoje, tbl){
+  const ws = wb.addWorksheet(nome);
+  const dados = rows.length ? rows.map(r=>cols.map(c=>r[c]??null)) : [cols.map(()=>null)];
+  ws.addTable({name:tbl, ref:"A1", headerRow:true, totalsRow:false,
+    style:{theme:"TableStyleLight8", showRowStripes:true},
+    columns:cols.map(c=>({name:c, filterButton:true})), rows:dados});
+  const nl = dados.length+1, ci = cols.indexOf("Data fatal")+1;
+  const cores = {[key(hoje)]:COR.d0, [key(addDias(hoje,1))]:COR.d1, [key(addDias(hoje,2))]:COR.d2};
+  for (let r=1;r<=nl;r++){
+    const row = ws.getRow(r); row.height = ALTURA;
+    const corLinha = (r>1 && ci) ? cores[key(row.getCell(ci).value)] : null;
+    for (let c=1;c<=cols.length;c++){
+      const cell = row.getCell(c);
+      cell.alignment = {horizontal:"center", vertical:"middle", wrapText:true};
+      if (corLinha) cell.fill = {type:"pattern",pattern:"solid",fgColor:{argb:corLinha}};
+      if (r>1 && c===ci) cell.numFmt = "dd/mm/yyyy";
+    }
+  }
+  if (ci) ws.getRow(1).getCell(ci).fill = {type:"pattern",pattern:"solid",fgColor:{argb:COR.cab}};
+  cols.forEach((c,i)=>ws.getColumn(i+1).width = LARG_ESP[c]||LARG);
+}
+
+async function salvar(zip, nomeArq, abas, cols, hoje, pref){
+  const wb = new ExcelJS.Workbook();
+  let i=0; for (const [nome,rows] of abas) aba(wb, nome, cols, rows, hoje, pref+(++i));
+  zip.file(nomeArq+".xlsx", await wb.xlsx.writeBuffer());
+}
+
+function porTipo(rows, area){
+  const g = {}; ORDEM.forEach(n=>g[n]=[]);
+  rows.forEach(r=>g[TIPO_ABA[norm(r["Tipo"]).replace(/\s/g,"")]||"Outras"].push(r));
+  const abas = [];
+  for (const n of ORDEM){
+    if (n==="Prazos" && area==="Cível"){
+      const ac = g[n].filter(r=>norm(r["Workflow"])==="acompanhamento");
+      const pr = g[n].filter(r=>norm(r["Workflow"])!=="acompanhamento");
+      if (pr.length) abas.push(["Prazos",pr]);
+      if (ac.length) abas.push(["Acompanhamentos",ac]);
+    } else if (g[n].length) abas.push([n,g[n]]);
+  }
+  return abas;
+}
+
+async function gerar(){
+  const file = $("arq").files[0], dia = $("dia").value;
+  if (!file) return alert("Escolha a base bruta (.xlsx).");
+  if (!dia) return alert("Informe a data do dia.");
+  const btn = $("go"), out = $("log");
+  btn.disabled = true; out.textContent = "Processando...";
+  try{
+    const [y,m,d] = dia.split("-").map(Number);
+    const hoje = new Date(Date.UTC(y,m-1,d)), suf = `${pad(d)}.${pad(m)}.${y}`;
+    const {cols, rows: bruto} = await ler(file);
+    const log = {};
+    auditoria.length = 0; // zera a auditoria a cada execução
+    const rows = tratar(bruto, log);
+    const zip = new JSZip();
+    await salvar(zip, `Agenda - ${suf}`, [["Agenda",rows]], cols, hoje, "Agenda");
+    const resumo = [];
+    for (const [area,arq] of Object.entries(ARQ_AREA)){
+      const abas = porTipo(rows.filter(r=>norm(r["Área"])===norm(area)), area);
+      if (!abas.length) continue;
+      await salvar(zip, `${arq} - ${suf}`, abas, cols, hoje, "T"+norm(area).slice(0,3));
+      resumo.push(`${area}: ` + abas.map(([n,r])=>`${n} ${r.length}`).join(", "));
+    }
+    const ex = new Set(FATAIS_EXCL.map(norm));
+    const fat = rows.filter(r=>key(r["Data fatal"])===key(hoje) && norm(r["Tipo"])==="prazo"
+      && norm(r["Evento"])==="workflow principal" && !ex.has(norm(r["Workflow"])));
+    await salvar(zip, `Agenda - Fatais - ${suf}`, [["Fatais",fat]], cols, hoje, "Fatais");
+
+    let txt = `Pronto! Data do dia (D0): ${suf}\nLinhas na base: ${log.original}\nExcluídas por Responsável 1: ${log.excluidas}\nPenal-Criminal → Cível: ${log.penal}\nÁreas vazias preenchidas: ${log.preench}\nLinhas na Agenda: ${rows.length}\n${resumo.join("\n")}\nFatais: ${fat.length}`;
+
+    // Auditoria: resumo em texto + planilha, ambos dentro do ZIP
+    zip.file("Resumo_Processamento.txt", "\uFEFF" + montarResumo(txt, log));
+    zip.file("Auditoria.xlsx", await gerarAuditoriaXlsx());
+
+    const blob = await zip.generateAsync({type:"blob", compression:"DEFLATE"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `Agendas - ${suf}.zip`; a.click();
+
+    out.textContent = txt;
+    if (log.semMapa.length){
+      const w = document.createElement("div"); w.className="warn";
+      w.textContent = "\nÁrea vazia sem responsável na lista (ficam só na Agenda principal):\n" + log.semMapa.join("\n");
+      out.appendChild(w);
+    }
+  }catch(e){ console.error(e); out.textContent = "Erro: "+e.message; }
+  btn.disabled = false;
+}
+
+const hojeBR = new Date().toLocaleDateString("en-CA",{timeZone:"America/Sao_Paulo"});
+$("dia").value = hojeBR;
+$("go").onclick = gerar;
+</script>
+</body>
+</html>
