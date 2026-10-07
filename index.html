@@ -239,7 +239,7 @@ function aba(wb, nome, cols, rows, hoje, tbl){
     }
   }
   ws.getRow(1).height = 30;
-  
+
   if (ci) ws.getRow(1).getCell(ci).fill = {type:"pattern",pattern:"solid",fgColor:{argb:COR.cab}};
   cols.forEach((c,i)=>ws.getColumn(i+1).width = LARG_ESP[c]||LARG);
 }
@@ -280,18 +280,18 @@ async function gerar(){
     const rows = tratar(bruto, log);
     const zip = new JSZip();
     const pasta = zip.folder(`Agendas - ${suf}`);
-    await salvar(zip, `Agenda - ${suf}`, [["Agenda",rows]], cols, hoje, "Agenda");
+    await salvar(pasta, `Agenda - ${suf}`, [["Agenda",rows]], cols, hoje, "Agenda");
     const resumo = [];
     for (const [area,arq] of Object.entries(ARQ_AREA)){
       const abas = porTipo(rows.filter(r=>norm(r["Área"])===norm(area)), area);
       if (!abas.length) continue;
-      await salvar(zip, `${arq} - ${suf}`, abas, cols, hoje, "T"+norm(area).slice(0,3));
+      await salvar(pasta, `${arq} - ${suf}`, abas, cols, hoje, "T"+norm(area).slice(0,3));
       resumo.push(`${area}: ` + abas.map(([n,r])=>`${n} ${r.length}`).join(", "));
     }
     const ex = new Set(FATAIS_EXCL.map(norm));
     const fat = rows.filter(r=>key(r["Data fatal"])===key(hoje) && norm(r["Tipo"])==="prazo"
       && norm(r["Evento"])==="workflow principal" && !ex.has(norm(r["Workflow"])));
-    await salvar(zip, `Agenda - Fatais - ${suf}`, [["Fatais",fat]], cols, hoje, "Fatais");
+    await salvar(pasta, `Agenda - Fatais - ${suf}`, [["Fatais",fat]], cols, hoje, "Fatais");
 
     let txt = `Pronto! Data do dia (D0): ${suf}\nLinhas na base: ${log.original}\nExcluídas por Responsável 1: ${log.excluidas}\nPenal-Criminal → Cível: ${log.penal}\nÁreas vazias preenchidas: ${log.preench}\nLinhas na Agenda: ${rows.length}\n${resumo.join("\n")}\nFatais: ${fat.length}`;
 
