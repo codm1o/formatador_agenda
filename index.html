@@ -209,23 +209,45 @@ function aba(wb, nome, cols, rows, hoje, tbl){
   const nl = dados.length+1, ci = cols.indexOf("Data fatal")+1;
   const cores = {[key(hoje)]:COR.d0, [key(addDias(hoje,1))]:COR.d1, [key(addDias(hoje,2))]:COR.d2};
   for (let r=1;r<=nl;r++){
-    const row = ws.getRow(r); row.height = ALTURA;
-    const corLinha = (r>1 && ci) ? cores[key(row.getCell(ci).value)] : null;
+    const row = ws.getRow(r); 
+    row.height = r === 1 ? 30 : ALTURA;
+
+    const corLinha = (r>1 && ci)
+     ? cores[key(row.getCell(ci).value)] 
+     : null;
+
     for (let c=1;c<=cols.length;c++){
       const cell = row.getCell(c);
-      cell.alignment = {horizontal:"center", vertical:"middle", wrapText:true};
-      if (corLinha) cell.fill = {type:"pattern",pattern:"solid",fgColor:{argb:corLinha}};
-      if (r>1 && c===ci) cell.numFmt = "dd/mm/yyyy";
+
+      cell.alignment = {
+        horizontal:"center", 
+        vertical:"middle", 
+        wrapText:true
+      };
+
+      if (corLinha){ 
+      cell.fill = {
+        type:"pattern",
+        pattern:"solid",
+        fgColor:{argb:corLinha}
+      };
+    }
+
+      if (r>1 && c===ci){
+       cell.numFmt = "dd/mm/yyyy";
+      }
     }
   }
+  ws.getRow(1).height = 30;
+  
   if (ci) ws.getRow(1).getCell(ci).fill = {type:"pattern",pattern:"solid",fgColor:{argb:COR.cab}};
   cols.forEach((c,i)=>ws.getColumn(i+1).width = LARG_ESP[c]||LARG);
 }
 
-async function salvar(zip, nomeArq, abas, cols, hoje, pref){
+async function salvar(destino, nomeArq, abas, cols, hoje, pref){
   const wb = new ExcelJS.Workbook();
   let i=0; for (const [nome,rows] of abas) aba(wb, nome, cols, rows, hoje, pref+(++i));
-  zip.file(nomeArq+".xlsx", await wb.xlsx.writeBuffer());
+  destino.file(nomeArq+".xlsx", await wb.xlsx.writeBuffer());
 }
 
 function porTipo(rows, area){
@@ -257,6 +279,7 @@ async function gerar(){
     auditoria.length = 0; // zera a auditoria a cada execução
     const rows = tratar(bruto, log);
     const zip = new JSZip();
+    const pasta = zip.folder(`Agendas - ${suf}`);
     await salvar(zip, `Agenda - ${suf}`, [["Agenda",rows]], cols, hoje, "Agenda");
     const resumo = [];
     for (const [area,arq] of Object.entries(ARQ_AREA)){
@@ -273,8 +296,8 @@ async function gerar(){
     let txt = `Pronto! Data do dia (D0): ${suf}\nLinhas na base: ${log.original}\nExcluídas por Responsável 1: ${log.excluidas}\nPenal-Criminal → Cível: ${log.penal}\nÁreas vazias preenchidas: ${log.preench}\nLinhas na Agenda: ${rows.length}\n${resumo.join("\n")}\nFatais: ${fat.length}`;
 
     // Auditoria: resumo em texto + planilha, ambos dentro do ZIP
-    zip.file("Resumo_Processamento.txt", "\uFEFF" + montarResumo(txt, log));
-    zip.file("Auditoria.xlsx", await gerarAuditoriaXlsx());
+    pasta.file("Resumo_Processamento.txt", "\uFEFF" + montarResumo(txt, log));
+    pasta.file("Auditoria.xlsx", await gerarAuditoriaXlsx());
 
     const blob = await zip.generateAsync({type:"blob", compression:"DEFLATE"});
     const a = document.createElement("a");
