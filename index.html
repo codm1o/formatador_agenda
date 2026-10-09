@@ -40,7 +40,12 @@ const RESP_AREA = {
   "Tributário": ["Samuel Magalhaes Silva de Almeida","Tatiana Sagula Machado Dias","Victor Hugo Rocha Macedo"]
 };
 const ARQ_AREA = {"Cível":"Agenda Cível","Trabalhista":"Agenda Trabalhista","Tributário":"Agenda Tributária"};
-const COR = {cab:"FFC00000", d0:"FFDA9694", d1:"FFFFFF99", d2:"FFFABF8F"};
+const COR = {cab:"FFC00000", d0:"FFDA9694", d1:"FFFFFF99", d2:"FFFABF8F", naoUtil:"FFFF6969"};
+// Feriados fixos (MM-DD): nacionais + São Paulo (25/01 aniversário da cidade, 09/07 data estadual)
+const FERIADOS_FIXOS = ["01-01","01-25","04-21","05-01","07-09","09-07","10-12","11-02","11-15","11-20","12-25"];
+// Feriados/pontos facultativos móveis (Carnaval, Sexta-feira Santa, Corpus Christi) são calculados automaticamente a partir da Páscoa.
+// Datas extras (recesso, 24/12, 31/12, feriado local etc.) no formato "YYYY-MM-DD":
+const FERIADOS_EXTRAS = [];
 const ALTURA = 120, LARG = 18;
 const LARG_ESP = {"Cliente":22,"Contrario":22,"Descrição":20,"Justificativas":20,"Observação (Justificativa)":20,"Workflow":20,"Responsável 1":20,"Responsável 2":20};
 const ORDEM = ["Prazos","Tarefas","Audiências","Julgamentos","Perícias","Reunião","Ligação","Outras"];
@@ -54,6 +59,46 @@ const ILEGAL = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const pad = n => String(n).padStart(2,"0");
 const key = d => d ? `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}` : "";
 const addDias = (d,n) => new Date(d.getTime()+n*864e5);
+
+// ======================= DIAS ÚTEIS / FERIADOS =======================
+function pascoa(ano){
+  const a=ano%19, b=Math.floor(ano/100), c=ano%100, d=Math.floor(b/4), e=b%4;
+  const f=Math.floor((b+8)/25), g=Math.floor((b-f+1)/3);
+  const h=(19*a+b-d-g+15)%30, i=Math.floor(c/4), k=c%4;
+  const l=(32+2*e+2*i-h-k)%7, m=Math.floor((a+11*h+22*l)/451);
+  const mes=Math.floor((h+l-7*m+114)/31), dia=((h+l-7*m+114)%31)+1;
+  return new Date(Date.UTC(ano,mes-1,dia));
+}
+const _cacheFer = {};
+function feriadosDoAno(ano){
+  if (_cacheFer[ano]) return _cacheFer[ano];
+  const s = new Set(FERIADOS_FIXOS.map(md=>`${ano}-${md}`));
+  const p = pascoa(ano);
+  [-48,-47,-2,60].forEach(n=>s.add(key(addDias(p,n)))); // Carnaval (seg/ter), Sexta-feira Santa, Corpus Christi
+  FERIADOS_EXTRAS.forEach(x=>s.add(x));
+  return _cacheFer[ano] = s;
+}
+const ehFeriado = d => feriadosDoAno(d.getUTCFullYear()).has(key(d));
+const ehFimDeSemana = d => { const w=d.getUTCDay(); return w===0 || w===6; };
+const ehDiaUtil = d => !ehFimDeSemana(d) && !ehFeriado(d);
+function proximoDiaUtil(d){ let x = addDias(d,1); while(!ehDiaUtil(x)) x = addDias(x,1); return x; }
+
+// D0 = data informada; D-1 = 1º dia útil após D0; D-2 = 2º dia útil após D0
+function calcularDatas(d0){
+  const d1 = proximoDiaUtil(d0), d2 = proximoDiaUtil(d1);
+  return {d0, d1, d2};
+}
+// Retorna a função que devolve a cor (ARGB) de uma "Data fatal"
+function montarCorDia({d0,d1,d2}){
+  const cores = {[key(d0)]:COR.d0, [key(d1)]:COR.d1, [key(d2)]:COR.d2};
+  return d => {
+    if (!(d instanceof Date)) return null;
+    const c = cores[key(d)];
+    if (c) return c;                       // D0 / D-1 / D-2 têm prioridade
+    return ehDiaUtil(d) ? null : COR.naoUtil; // sáb/dom/feriado → cor de alerta
+  };
+}
+// =====================================================================
 
 // ======================= AUDITORIA =======================
 const auditoria = [];
@@ -200,20 +245,19 @@ function tratar(rows, log){
   return rows;
 }
 
-function aba(wb, nome, cols, rows, hoje, tbl){
+function aba(wb, nome, cols, rows, corDia, tbl){
   const ws = wb.addWorksheet(nome);
   const dados = rows.length ? rows.map(r=>cols.map(c=>r[c]??null)) : [cols.map(()=>null)];
   ws.addTable({name:tbl, ref:"A1", headerRow:true, totalsRow:false,
     style:{theme:"TableStyleLight8", showRowStripes:true},
     columns:cols.map(c=>({name:c, filterButton:true})), rows:dados});
   const nl = dados.length+1, ci = cols.indexOf("Data fatal")+1;
-  const cores = {[key(hoje)]:COR.d0, [key(addDias(hoje,1))]:COR.d1, [key(addDias(hoje,2))]:COR.d2};
   for (let r=1;r<=nl;r++){
     const row = ws.getRow(r); 
     row.height = r === 1 ? 30 : ALTURA;
 
     const corLinha = (r>1 && ci)
-     ? cores[key(row.getCell(ci).value)] 
+     ? corDia(row.getCell(ci).value)
      : null;
 
     for (let c=1;c<=cols.length;c++){
@@ -244,9 +288,9 @@ function aba(wb, nome, cols, rows, hoje, tbl){
   cols.forEach((c,i)=>ws.getColumn(i+1).width = LARG_ESP[c]||LARG);
 }
 
-async function salvar(destino, nomeArq, abas, cols, hoje, pref){
+async function salvar(destino, nomeArq, abas, cols, corDia, pref){
   const wb = new ExcelJS.Workbook();
-  let i=0; for (const [nome,rows] of abas) aba(wb, nome, cols, rows, hoje, pref+(++i));
+  let i=0; for (const [nome,rows] of abas) aba(wb, nome, cols, rows, corDia, pref+(++i));
   destino.file(nomeArq+".xlsx", await wb.xlsx.writeBuffer());
 }
 
@@ -278,22 +322,25 @@ async function gerar(){
     const log = {};
     auditoria.length = 0; // zera a auditoria a cada execução
     const rows = tratar(bruto, log);
+    const datas = calcularDatas(hoje);
+    const corDia = montarCorDia(datas);
+    const fmt = x => `${pad(x.getUTCDate())}/${pad(x.getUTCMonth()+1)}/${x.getUTCFullYear()}`;
     const zip = new JSZip();
     const pasta = zip.folder(`Agendas - ${suf}`);
-    await salvar(pasta, `Agenda - ${suf}`, [["Agenda",rows]], cols, hoje, "Agenda");
+    await salvar(pasta, `Agenda - ${suf}`, [["Agenda",rows]], cols, corDia, "Agenda");
     const resumo = [];
     for (const [area,arq] of Object.entries(ARQ_AREA)){
       const abas = porTipo(rows.filter(r=>norm(r["Área"])===norm(area)), area);
       if (!abas.length) continue;
-      await salvar(pasta, `${arq} - ${suf}`, abas, cols, hoje, "T"+norm(area).slice(0,3));
+      await salvar(pasta, `${arq} - ${suf}`, abas, cols, corDia, "T"+norm(area).slice(0,3));
       resumo.push(`${area}: ` + abas.map(([n,r])=>`${n} ${r.length}`).join(", "));
     }
     const ex = new Set(FATAIS_EXCL.map(norm));
     const fat = rows.filter(r=>key(r["Data fatal"])===key(hoje) && norm(r["Tipo"])==="prazo"
       && norm(r["Evento"])==="workflow principal" && !ex.has(norm(r["Workflow"])));
-    await salvar(pasta, `Agenda - Fatais - ${suf}`, [["Fatais",fat]], cols, hoje, "Fatais");
+    await salvar(pasta, `Agenda - Fatais - ${suf}`, [["Fatais",fat]], cols, corDia, "Fatais");
 
-    let txt = `Pronto! Data do dia (D0): ${suf}\nLinhas na base: ${log.original}\nExcluídas por Responsável 1: ${log.excluidas}\nPenal-Criminal → Cível: ${log.penal}\nÁreas vazias preenchidas: ${log.preench}\nLinhas na Agenda: ${rows.length}\n${resumo.join("\n")}\nFatais: ${fat.length}`;
+    let txt = `Pronto! Data do dia (D0): ${suf}\nD-1 (1º dia útil após D0): ${fmt(datas.d1)}\nD-2 (2º dia útil após D0): ${fmt(datas.d2)}\nLinhas na base: ${log.original}\nExcluídas por Responsável 1: ${log.excluidas}\nPenal-Criminal → Cível: ${log.penal}\nÁreas vazias preenchidas: ${log.preench}\nLinhas na Agenda: ${rows.length}\n${resumo.join("\n")}\nFatais: ${fat.length}`;
 
     // Auditoria: resumo em texto + planilha, ambos dentro do ZIP
     pasta.file("Resumo_Processamento.txt", "\uFEFF" + montarResumo(txt, log));
